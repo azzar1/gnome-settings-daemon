@@ -276,6 +276,7 @@ struct GnomeXSettingsManagerPrivate
 
         GsdRemoteDisplayManager *remote_display;
 
+        guint              display_config_watch_id;
         guint              monitors_changed_id;
 
         guint              shell_name_watch_id;
@@ -1121,6 +1122,33 @@ on_monitors_changed (GDBusConnection *connection,
         monitors_changed (manager);
 }
 
+static void
+on_display_config_name_appeared_handler (GDBusConnection *connection,
+                                         const gchar *name,
+                                         const gchar *name_owner,
+                                         gpointer data)
+{
+        GnomeXSettingsManager *manager = data;
+
+        g_bus_unwatch_name (manager->priv->display_config_watch_id);
+        manager->priv->display_config_watch_id = 0;
+
+        manager->priv->monitors_changed_id =
+                g_dbus_connection_signal_subscribe (manager->priv->dbus_connection,
+                                                    "org.gnome.Mutter.DisplayConfig",
+                                                    "org.gnome.Mutter.DisplayConfig",
+                                                    "MonitorsChanged",
+                                                    "/org/gnome/Mutter/DisplayConfig",
+                                                    NULL,
+                                                    G_DBUS_SIGNAL_FLAGS_NONE,
+                                                    on_monitors_changed,
+                                                    manager,
+                                                    NULL);
+
+        update_xft_settings (manager);
+        queue_notify (manager);
+}
+
 gboolean
 gnome_xsettings_manager_start (GnomeXSettingsManager *manager,
                                GError               **error)
@@ -1144,17 +1172,15 @@ gnome_xsettings_manager_start (GnomeXSettingsManager *manager,
         g_signal_connect (G_OBJECT (manager->priv->remote_display), "notify::force-disable-animations",
                           G_CALLBACK (force_disable_animation_changed), manager);
 
-        manager->priv->monitors_changed_id =
-                g_dbus_connection_signal_subscribe (manager->priv->dbus_connection,
-                                                    "org.gnome.Mutter.DisplayConfig",
-                                                    "org.gnome.Mutter.DisplayConfig",
-                                                    "MonitorsChanged",
-                                                    "/org/gnome/Mutter/DisplayConfig",
-                                                    NULL,
-                                                    G_DBUS_SIGNAL_FLAGS_NONE,
-                                                    on_monitors_changed,
-                                                    manager,
-                                                    NULL);
+        manager->priv->monitors_changed_id = 0;
+        manager->priv->display_config_watch_id =
+		g_bus_watch_name_on_connection (manager->priv->dbus_connection,
+                                                "org.gnome.Mutter.DisplayConfig",
+                                                G_BUS_NAME_WATCHER_FLAGS_NONE,
+                                                on_display_config_name_appeared_handler,
+                                                NULL,
+                                                manager,
+                                                NULL);
 
         manager->priv->settings = g_hash_table_new_full (g_str_hash, g_str_equal,
                                                          NULL, (GDestroyNotify) g_object_unref);
@@ -1266,6 +1292,11 @@ gnome_xsettings_manager_stop (GnomeXSettingsManager *manager)
                 g_dbus_connection_signal_unsubscribe (p->dbus_connection,
                                                       p->monitors_changed_id);
                 p->monitors_changed_id = 0;
+        }
+
+        if (p->display_config_watch_id) {
+                g_bus_unwatch_name (p->display_config_watch_id);
+                p->display_config_watch_id = 0;
         }
 
         if (p->shell_name_watch_id > 0) {
